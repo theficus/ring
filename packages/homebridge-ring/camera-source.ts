@@ -74,17 +74,21 @@ class StreamingSessionWrapper {
   public prepareStreamRequest
   public ringCamera
   public start
+  private readonly onLiveStreamSnapshot?: (snapshot: Buffer) => void
+  private snapshotBuffer?: Buffer
 
   constructor(
     streamingSession: StreamingSession,
     prepareStreamRequest: PrepareStreamRequest,
     ringCamera: RingCamera,
     start: number,
+    onLiveStreamSnapshot?: (snapshot: Buffer) => void,
   ) {
     this.streamingSession = streamingSession
     this.prepareStreamRequest = prepareStreamRequest
     this.ringCamera = ringCamera
     this.start = start
+    this.onLiveStreamSnapshot = onLiveStreamSnapshot
 
     const {
         targetAddress,
@@ -143,6 +147,28 @@ class StreamingSessionWrapper {
           .catch(logError)
       }),
     )
+  }
+
+  private cacheLiveStreamSnapshot(chunk: Buffer) {
+    this.snapshotBuffer = this.snapshotBuffer
+      ? Buffer.concat([this.snapshotBuffer, chunk])
+      : chunk
+
+    let start = this.snapshotBuffer.indexOf(Buffer.from([0xff, 0xd8])),
+      end = this.snapshotBuffer.indexOf(Buffer.from([0xff, 0xd9]), start + 2)
+
+    while (start >= 0 && end >= 0) {
+      this.onLiveStreamSnapshot?.(this.snapshotBuffer.subarray(start, end + 2))
+      this.snapshotBuffer = this.snapshotBuffer.subarray(end + 2)
+      start = this.snapshotBuffer.indexOf(Buffer.from([0xff, 0xd8]))
+      end = this.snapshotBuffer.indexOf(Buffer.from([0xff, 0xd9]), start + 2)
+    }
+
+    if (this.snapshotBuffer.length > 10 * 1024 * 1024) {
+      this.snapshotBuffer = this.snapshotBuffer.subarray(
+        this.snapshotBuffer.lastIndexOf(Buffer.from([0xff, 0xd8])),
+      )
+    }
   }
 
   private listenForAudioPackets(startStreamRequest: StartStreamRequest) {
@@ -313,7 +339,18 @@ class StreamingSessionWrapper {
 
     this.listenForAudioPackets(request)
     await returnAudioTranscoder.start()
-    await transcodingPromise
+
+    const snapshotCapturePromise = this.onLiveStreamSnapshot
+      ? this.streamingSession.startTranscoding({
+          audio: [],
+          video: ['-an', '-vf', 'fps=1', '-c:v', 'mjpeg', '-f', 'image2pipe'],
+          output: ['pipe:1'],
+          stdoutCallback: (chunk: Buffer) =>
+            this.cacheLiveStreamSnapshot(chunk),
+        })
+      : undefined
+
+    await Promise.all([transcodingPromise, snapshotCapturePromise])
   }
 
   stop() {
@@ -328,10 +365,13 @@ export class CameraSource implements CameraStreamingDelegate {
   public controller
   private sessions: { [sessionKey: string]: StreamingSessionWrapper } = {}
   private cachedSnapshot?: Buffer
+  private liveStreamSnapshot?: Buffer
   private ringCamera
+  private useLastLiveStreamSnapshot
 
-  constructor(ringCamera: RingCamera) {
+  constructor(ringCamera: RingCamera, useLastLiveStreamSnapshot = false) {
     this.ringCamera = ringCamera
+    this.useLastLiveStreamSnapshot = useLastLiveStreamSnapshot
     this.controller = new hap.CameraController({
       cameraStreamCount: 10,
       delegate: this,
@@ -453,6 +493,11 @@ export class CameraSource implements CameraStreamingDelegate {
     }
 
     if (this.ringCamera.snapshotsAreBlocked) {
+      if (this.useLastLiveStreamSnapshot && this.liveStreamSnapshot) {
+        logDebug(`Used live stream snapshot for ${this.ringCamera.name}`)
+        return this.liveStreamSnapshot
+      }
+
       return readFileAsync(snapshotsBlockedPath)
     }
 
@@ -506,6 +551,11 @@ export class CameraSource implements CameraStreamingDelegate {
           request,
           this.ringCamera,
           start,
+          this.useLastLiveStreamSnapshot
+            ? (snapshot) => {
+                this.liveStreamSnapshot = snapshot
+              }
+            : undefined,
         )
 
       this.sessions[request.sessionID] = session

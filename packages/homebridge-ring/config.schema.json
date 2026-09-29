@@ -39,6 +39,11 @@
         "title": "Hide Camera Motion Sensors",
         "type": "boolean"
       },
+      "useLastLiveStreamSnapshot": {
+        "title": "Use Last Live Stream Snapshot",
+        "type": "boolean",
+        "description": "When Ring blocks snapshots, show the most recently captured frame from a live stream instead of the Snapshot Blocked image. This image is held in memory and is cleared when Homebridge restarts."
+      },
       "hideCameraSirenSwitch": {
         "title": "Hide Camera Siren Switch",
         "type": "boolean"
@@ -157,6 +162,7 @@
         "hideDoorbellSwitch",
         "hideCameraLight",
         "hideCameraMotionSensor",
+        "useLastLiveStreamSnapshot",
         "hideCameraSirenSwitch",
         "hideInHomeDoorbellSwitch",
         "hideAlarmSirenSwitch",
